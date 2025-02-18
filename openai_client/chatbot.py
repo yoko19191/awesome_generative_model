@@ -15,6 +15,7 @@ from rich.syntax import Syntax
 from rich import box
 import random
 from datetime import datetime
+import json
 
 console = Console()
 
@@ -43,7 +44,7 @@ def select_provider() -> str:
         return PROVIDERS[int(choice)-1]
 
 def select_model(client: LLMClient) -> str:
-    """让用户从可用模型列表中选择"""
+    """让用户从可用模型列表中选择或输入自定义模型名称"""
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -53,12 +54,15 @@ def select_model(client: LLMClient) -> str:
         models = client.list_models()
     
     if not models:
-        console.print("[yellow]No models found, using default model[/yellow]")
-        return client.model
+        custom_model = Prompt.ask(
+            "Enter model name",
+            default=client.model
+        )
+        return custom_model
     
     console.print(Panel(
         "\n".join([f"[cyan]{i+1}.[/cyan] {model}" for i, model in enumerate(models)]) + 
-        "\n\n[italic]You can enter a number or directly type the model name[/italic]",
+        "\n\n[italic]You can enter a number, model name from the list, or any custom model name[/italic]",
         title="Available Models",
         border_style="blue"
     ))
@@ -70,14 +74,12 @@ def select_model(client: LLMClient) -> str:
         )
         if choice.isdigit() and 1 <= int(choice) <= len(models):
             return models[int(choice)-1]
-        elif choice in models:
-            return choice
         else:
-            console.print("[red]Invalid choice. Please enter a valid number or model name.[/red]")
+            return choice  # 返回用户输入的任何模型名称
 
 def get_system_prompt() -> str:
     """获取用户自定义的系统提示词"""
-    default_prompt = ""
+    default_prompt = "You are a helpful assistant. You can use function calling to get external knowledge."
     return Prompt.ask(
         "\n[bold]Enter system prompt[/bold]",
         default=default_prompt
@@ -97,6 +99,14 @@ def get_temperature() -> float:
                 console.print("[red]Temperature must be between 0.0 and 1.0[/red]")
         except ValueError:
             console.print("[red]Please enter a valid number[/red]")
+
+def enable_tools() -> bool:
+    """让用户选择是否启用 tools 功能"""
+    return Prompt.ask(
+        "\n[bold]Enable tools (weather, etc.)?[/bold] (y/n)",
+        choices=["y", "n"],
+        default="y"
+    ).lower() == "y"
 
 def display_welcome():
     title = """
@@ -155,10 +165,14 @@ def main():
     # 设置系统提示词
     system_prompt = get_system_prompt()
     
+    # 选择是否启用 tools
+    tools_enabled = enable_tools()
+    
     console.print(Panel(
         f"[cyan]Provider:[/cyan] {provider}\n"
         f"[cyan]Model:[/cyan] {selected_model}\n"
-        f"[cyan]Temperature:[/cyan] {temperature}\n",
+        f"[cyan]Temperature:[/cyan] {temperature}\n"
+        f"[cyan]Tools enabled:[/cyan] {'Yes' if tools_enabled else 'No'}\n",
         title="Chat Configuration",
         border_style="green"
     ))
@@ -194,7 +208,8 @@ def main():
             try:
                 for chunk_type, chunk in client.stream_chat_completion(
                     messages=messages,
-                    temperature=temperature
+                    temperature=temperature,
+                    tools=TOOLS_CONFIG if tools_enabled else None
                 ):
                     # 记录第一个token的时间
                     if first_token_time is None and (chunk_type == 'content' or chunk_type == 'reasoning'):
@@ -204,9 +219,54 @@ def main():
                     elapsed = time.time() - start_time
                     token_speed = token_count / elapsed if elapsed > 0 else 0
                     
-                    # 准备延迟信息
-                    latency_info = f"[yellow]First token latency: {first_token_latency:.2f}s[/yellow]\n" if first_token_latency is not None else ""
+                    # 计算延迟信息
+                    latency_info = ""
+                    if first_token_latency is not None:
+                        latency_info = f"[dim]First token latency: {first_token_latency:.2f}s[/dim]\n"
                     
+                    if chunk_type == 'function_call':
+                        try:
+                            # 解析函数调用信息
+                            function_call = chunk
+                            function_name = function_call.get('name')
+                            arguments = function_call.get('arguments', '{}')
+                            if isinstance(arguments, str):
+                                arguments = json.loads(arguments)
+                            
+                            # 重命名参数 city 为 location
+                            if 'city' in arguments:
+                                arguments['location'] = arguments.pop('city')
+                            
+                            # 显示函数调用信息
+                            console.print(Panel(
+                                f"🔧 Calling function: [bold cyan]{function_name}[/bold cyan]\n" +
+                                f"Arguments: [yellow]{json.dumps(arguments, indent=2)}[/yellow]",
+                                title="Function Call",
+                                border_style="cyan"
+                            ))
+                            
+                            # 执行函数调用
+                            if function_name == "get_weather":
+                                result = get_weather(**arguments)
+                                
+                                # 显示函数返回结果
+                                console.print(Panel(
+                                    f"📊 Function returned:\n[green]{json.dumps(result, indent=2)}[/green]",
+                                    title="Function Result",
+                                    border_style="green"
+                                ))
+                                
+                                # 将函数调用结果添加到消息历史
+                                messages.append({
+                                    "role": "function",
+                                    "name": function_name,
+                                    "content": json.dumps(result)
+                                })
+                        except Exception as e:
+                            console.print(f"[red]Error executing function: {str(e)}[/red]")
+                        continue
+                    
+                    # 原有的 reasoning 和 content 处理逻辑
                     if chunk_type == 'reasoning':
                         reasoning_content += chunk
                         live.update(Panel(

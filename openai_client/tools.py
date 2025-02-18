@@ -11,16 +11,16 @@ TOOLS_CONFIG = [
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "Get the basic and advanced weather in a given city in english. priority at basic weather information if user don't have any specific requirement",
+            "description": "Get the current weather information for a city",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "city": {
+                    "location": {
                         "type": "string",
-                        "description": "The english name of the city to get weather information for."
+                        "description": "The city name in english, e.g. Hangzhou, Beijing"
                     }
                 },
-                "required": ["city"]
+                "required": ["location"]
             }
         }
     }
@@ -28,7 +28,7 @@ TOOLS_CONFIG = [
 
 
 
-def get_weather(city: str):
+def get_weather(location: str):
     """example response data
     {'coord': 
         {'lon': 120.1614, 'lat': 30.2937},
@@ -59,7 +59,7 @@ def get_weather(city: str):
     base_url = "http://api.openweathermap.org/data/2.5/weather"
     params = {
         'appid': weather_api_key,
-        'q': city,
+        'q': location,
         'units': 'metric',
         #'lang': 'zh_cn'
     }
@@ -100,7 +100,7 @@ def get_weather(city: str):
             }
         }
     except requests.exceptions.RequestException as e:
-        return f"Cound not retrieve weather information for {city} due to {e}"
+        return f"Cound not retrieve weather information for {location} due to {e}"
     
     
     
